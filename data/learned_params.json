@@ -1,0 +1,195 @@
+{
+  "meta": {
+    "draws": "837-1243 (407 draws)",
+    "bonus": "836-1243",
+    "computed_at": "2026-09-28",
+    "computed_by": "independent recomputation from user xlsx + dhlottery bonus",
+    "elasticity_added": "2026-09-28 대역별 탄성계수 정량화"
+  },
+  "agent1": {
+    "cm_high": 27.0,
+    "down_success": 0.8602,
+    "n_high": 93,
+    "cm_low": 18.5,
+    "up_success": 0.9565,
+    "n_low": 69,
+    "tuning": "2026-09-28 그리드 최적화 (발견 837~1040 → 검증 1041~1243). 기존 26/20 대비 검증 평균 84.5%→92.5%. 검증구간에서 선택했으므로 수치는 상한 추정치."
+  },
+  "agent2": {
+    "corr": [
+      [
+        1.0,
+        -0.185,
+        -0.275,
+        -0.3,
+        -0.218
+      ],
+      [
+        -0.185,
+        1.0,
+        -0.329,
+        -0.372,
+        -0.157
+      ],
+      [
+        -0.275,
+        -0.329,
+        1.0,
+        -0.244,
+        -0.191
+      ],
+      [
+        -0.3,
+        -0.372,
+        -0.244,
+        1.0,
+        -0.198
+      ],
+      [
+        -0.218,
+        -0.157,
+        -0.191,
+        -0.198,
+        1.0
+      ]
+    ],
+    "labels": [
+      "D1(1-10)",
+      "D2(11-20)",
+      "D3(21-30)",
+      "D4(31-40)",
+      "D5(41-45)"
+    ]
+  },
+  "agent3": {
+    "carry_mean": 0.78,
+    "neighbor_mean": 1.22,
+    "bonus_mean": 0.36,
+    "total_mean": 2.36,
+    "quota": [
+      2,
+      3
+    ],
+    "n": 406
+  },
+  "agent4": {
+    "pass_rates": {
+      "prime": 0.85,
+      "parity": 0.803,
+      "esum": 0.688,
+      "gap": 0.602,
+      "span": 0.654,
+      "std": 0.491,
+      "all6": 0.108
+    },
+    "gate_defs": {
+      "std": [
+        11.0,
+        14.5
+      ],
+      "prime": [
+        1,
+        3
+      ],
+      "parity": [
+        "2:4",
+        "3:3",
+        "4:2"
+      ],
+      "esum": [
+        20,
+        33
+      ],
+      "gap_max": 14,
+      "span": [
+        30,
+        42
+      ]
+    },
+    "note": "std=population std, esum=sum of n%10"
+  },
+  "agent5": {
+    "freeze": {
+      "D1": {
+        "frozen": 91,
+        "consecutive": 18,
+        "reconsec_rate": 0.1978
+      },
+      "D2": {
+        "frozen": 71,
+        "consecutive": 13,
+        "reconsec_rate": 0.1831
+      },
+      "D3": {
+        "frozen": 77,
+        "consecutive": 11,
+        "reconsec_rate": 0.1429
+      },
+      "D4": {
+        "frozen": 78,
+        "consecutive": 15,
+        "reconsec_rate": 0.1923
+      },
+      "D5": {
+        "frozen": 194,
+        "consecutive": 92,
+        "reconsec_rate": 0.4742
+      }
+    },
+    "elasticity": {
+      "def": "k = 결빙 후 다음 회차 평균 개수 / 평시 평균 개수. k>1이면 평시보다 강하게 튐",
+      "D1": {
+        "k": 1.09,
+        "rebound": 0.802,
+        "note": "발견/검증 78.3/82.2 — 안정"
+      },
+      "D2": {
+        "k": 0.92,
+        "rebound": 0.817,
+        "note": "k<1 — 반등은 하지만 평시 평균에는 못 미침"
+      },
+      "D3": {
+        "k": 1.02,
+        "rebound": 0.857,
+        "note": "반등률 최고, 재결빙 최저 14.3%"
+      },
+      "D4": {
+        "k": 1.11,
+        "rebound": 0.808,
+        "note": "k 최고 — 가장 탄성적"
+      },
+      "D5": {
+        "k": 1.04,
+        "rebound": 0.526,
+        "reconsec": 0.474,
+        "note": "5개 번호 대역이라 결빙 잦고 반등/재결빙이 반반 — 별도 레짐"
+      },
+      "honest": "k는 1.0 근처 — 반등은 '평시로 복귀'이지 '폭발'이 아님. 탄성은 복귀 확률(80%+)에 있지 크기에 있지 않음"
+    }
+  },
+  "agent6": {
+    "model": "2-state constant-velocity Kalman: x=[CM,dCM], F=[[1,1],[0,1]], H=[1,0], Q=q*[[1/4,1/2],[1/2,1]]",
+    "q": 0.81283,
+    "r": 3.935501,
+    "calibration": "DARE 역산 — 스펙 정상상태 P(P00=2.4063, P11=1.3478)에 맞춤. 50스텝 내 수렴",
+    "recomputed": {
+      "P00": 2.4052,
+      "P01": 1.1153,
+      "P11": 1.3465,
+      "final_cm_estimate": 24.33,
+      "mean_innovation": 0.0128
+    },
+    "spec_claimed": {
+      "P00": 2.4063,
+      "P11": 1.3478,
+      "final_cm": 24.47,
+      "mean_innov": -0.185
+    },
+    "verdict": {
+      "P00": "0.05% 오차 — 재현됨",
+      "P11": "0.1% 오차 — 재현됨",
+      "final_cm": "0.6% 오차 — 근접",
+      "mean_innovation": "불일치 — 표준 정의로 재현 불가, 원본 산출 방식 필요"
+    }
+  }
+}
