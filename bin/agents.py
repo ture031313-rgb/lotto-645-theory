@@ -110,7 +110,12 @@ def agent2_quotas(df):
         q = np.roll(base, roll)
         q[4] = 0
         while q.sum() != 6:
-            q[np.argmax(hist_mean - q)] += 1 if q.sum() < 6 else -1
+            # D5는 방어 대역이라 재배치에서 제외한다.
+            # (2026-10-08 수정: 기존 코드는 이 루프가 D5에 +1을 되돌려
+            #  "D5=0 방어"가 무력화됐음 — hedge 게임 전부 D5 1볼로 생성되던 버그)
+            gaps = hist_mean - q
+            gaps[4] = -np.inf
+            q[int(np.argmax(gaps))] += 1 if q.sum() < 6 else -1
         hedge.append(tuple(int(x) for x in q))
     log("Agent2", f"hist_mean={np.round(hist_mean,2).tolist()}, last={last.tolist()}, "
                   f"primary={quotas}, hedge={hedge}")
@@ -142,8 +147,15 @@ def agent3_transition(df):
 
 
 # ---------------------------------------------------------------- Agent 4
-def agent4_score(game):
-    """소프트 마진 필터 점수. 핵심 게이트(소수/홀짝) 위반은 탈락, 나머지는 감점."""
+def agent4_score(game, target_cm=None, pool=None, attack_decades=None):
+    """소프트 마진 필터 점수. 핵심 게이트(소수/홀짝) 위반은 탈락.
+    감점(제약 위반) + 가점(이론 부합)으로 변별력을 확보한다.
+    가점 근거: (1) Agent1 목표CM 근접 = 이론의 핵심 예측과 일치,
+    (2) pool 포함 = Agent3 실측(당첨번호의 39.3%가 pool 출신)과 일치,
+    (3) attack_decades = Agent5 결빙 대역 반등 공격 (D5 제외 — D5는 재결빙률
+    47.2%로 최고라 방어가 정답이며, agent2 hedge quota의 0볼 방어로 처리됨).
+    가점 없이 감점만 있으면 통과 후보가 전부 동점(-0.0)이 되어
+    '200개 중 최고 선택'이 무력화된다 (2026-10-04 진단)."""
     a = np.sort(game)
     s = float(np.std(a))
     pc = sum(1 for x in game if x in PRIMES)
@@ -164,7 +176,15 @@ def agent4_score(game):
         penalty += (gap - 14) * 1.5
     if not (30 <= span <= 42):
         penalty += min(abs(span - 30), abs(span - 42)) * 0.5
-    return -penalty
+    bonus = 0.0
+    if target_cm is not None:
+        cm = sum(game) / 6.0
+        bonus += max(0.0, 2.0 - abs(cm - target_cm))
+    if pool is not None:
+        bonus += sum(1 for x in game if x in pool) * 0.5
+    if attack_decades is not None:
+        bonus += sum(1 for x in game if dec(x) in attack_decades) * 0.5
+    return bonus - penalty
 
 
 # ---------------------------------------------------------------- Agent 5
@@ -262,9 +282,20 @@ def hogi_agents(df):
 # ---------------------------------------------------------------- 게임 생성
 def generate_games(df, seed, n_primary=7, n_hedge=3, candidates_per_slot=200):
     rng = np.random.default_rng(seed)
+    a1 = agent1_phase_zlema(df)
     a2 = agent2_quotas(df)
     a3 = agent3_transition(df)
+    a5 = agent5_hedge(df)
     pool = a3["pool"]
+    pool_set = set(pool)
+    target_cm = a1["target_cm_mean"]
+    # Agent5 연결: 결빙된 대역(비-D5)은 반등 공격 가중.
+    # D5 결빙은 재결빙률 47.2%로 최고라 방어가 정답이며,
+    # agent2 hedge quota의 D5=0볼 방어로 이미 처리되므로 제외.
+    attack_decades = {d for d in range(4)
+                      if a5["states"][f"D{d+1}"]["frozen_now"]}
+    if attack_decades:
+        log("Agent5", f"반등 공격 대역: {sorted(f'D{d+1}' for d in attack_decades)}")
     qmin, qmax = a3["mandate"]
     bands = [list(range(1, 11)), list(range(11, 21)), list(range(21, 31)),
              list(range(31, 41)), list(range(41, 46))]
@@ -293,12 +324,182 @@ def generate_games(df, seed, n_primary=7, n_hedge=3, candidates_per_slot=200):
             if not ok or len(chosen) != 6:
                 continue
             game = sorted(int(x) for x in chosen)
-            sc = agent4_score(game)
+            sc = agent4_score(game, target_cm=target_cm, pool=pool_set,
+                             attack_decades=attack_decades)
             if sc is None:
                 continue
             if best_score is None or sc > best_score:
                 best, best_score = game, sc
+        if best is None:
+            # 200개 후보 전부 게이트 탈락 — 확률상 거의 불가능하나
+            # silent None이 원장·시트까지 흘러가는 것을 방지하기 위해 명시적 오류
+            raise RuntimeError(
+                f"[{kind}] quota={quota}: 200 candidates all gated out")
         games.append({"kind": kind, "quota": list(quota), "numbers": best,
                       "filter_score": best_score})
         log("GEN", f"{kind} quota={quota} -> {best} (score {best_score})")
     return games
+
+
+# ---------------------------------------------------------------- 에이전트 감시 (validation)
+def validate_prediction(result):
+    """각 에이전트 출력을 검사한다. 예측 JSON 1개를 받아
+    [{agent, check, status, detail}] 리스트를 반환한다.
+    status: ok / warn / fail"""
+    checks = []
+
+    def add(agent, check, status, detail=""):
+        checks.append({"agent": agent, "check": check,
+                       "status": status, "detail": detail})
+
+    # ---- Agent1 ----
+    a1 = result.get("agent1", {})
+    band = a1.get("target_cm_band", [])
+    if len(band) == 2 and band[0] < band[1]:
+        add("agent1", "밴드 유효성", "ok", f"{band}")
+    else:
+        add("agent1", "밴드 유효성", "fail", f"band={band}")
+    if band and 1 <= band[0] and band[1] <= 45:
+        add("agent1", "밴드 범위 (1~45)", "ok")
+    else:
+        add("agent1", "밴드 범위 (1~45)", "fail", f"band={band}")
+    mean = a1.get("target_cm_mean")
+    if band and mean is not None and band[0] <= mean <= band[1]:
+        add("agent1", "mean이 밴드 안에", "ok")
+    else:
+        add("agent1", "mean이 밴드 안에", "fail", f"mean={mean}, band={band}")
+    if a1.get("phase") in ("HIGH_OVERSHOOT", "LOW_DRAWDOWN", "EQUILIBRIUM"):
+        add("agent1", "phase 값 유효", "ok", a1["phase"])
+    else:
+        add("agent1", "phase 값 유효", "fail", str(a1.get("phase")))
+
+    # ---- Agent2 ----
+    a2 = result.get("agent2", {})
+    pqs, hqs = a2.get("primary_quotas", []), a2.get("hedge_quotas", [])
+    if len(pqs) == 3 and len(hqs) == 2:
+        add("agent2", "quota 개수 (3+2)", "ok")
+    else:
+        add("agent2", "quota 개수 (3+2)", "fail",
+            f"primary={len(pqs)}, hedge={len(hqs)}")
+    bad_q = [q for q in pqs + hqs
+             if not (isinstance(q, (list, tuple)) and len(q) == 5
+                     and sum(q) == 6 and all(isinstance(x, int) and x >= 0 for x in q))]
+    if not bad_q:
+        add("agent2", "quota 합=6·비음수", "ok")
+    else:
+        add("agent2", "quota 합=6·비음수", "fail", str(bad_q))
+    # D5 방어: hedge 쿼터는 D5=0이어야 한다.
+    # (2026-10-08 버그: 재배치 루프가 D5에 +1을 되돌려 방어가 무력화됐었음.
+    #  주석만 믿고 넘어갔던 전례라 실행 결과로 직접 검사한다.)
+    bad_hq = [q for q in hqs
+              if not (isinstance(q, (list, tuple)) and len(q) == 5 and q[4] == 0)]
+    if not bad_hq:
+        add("agent2", "hedge 쿼터 D5=0", "ok")
+    else:
+        add("agent2", "hedge 쿼터 D5=0", "fail",
+            f"D5≠0 hedge 쿼터: {bad_hq}")
+    # hedge 게임에 D5 볼이 실제로 없는지도 검사 (쿼터≠게임 어긋남 방지)
+    _games = result.get("games", [])
+    _hedge_games = [g for g in _games if g.get("kind") == "hedge"]
+    bad_hg = [g.get("numbers") for g in _hedge_games
+              if any(min((n - 1) // 10, 4) == 4 for n in g.get("numbers", []))]
+    if not bad_hg:
+        add("agent2", "hedge 게임 D5 볼 없음", "ok",
+            f"{len(_hedge_games)}개 확인")
+    else:
+        add("agent2", "hedge 게임 D5 볼 없음", "fail", str(bad_hg))
+
+    # ---- Agent3 ----
+    a3 = result.get("agent3", {})
+    pool = set(a3.get("pool", []))
+    expect = (set(a3.get("carry", [])) | set(a3.get("neighbors", []))
+              | set(a3.get("bonus_channel", [])))
+    if pool == expect and pool:
+        add("agent3", "pool = carry∪neighbors∪bonus_ch", "ok", f"{len(pool)}개")
+    else:
+        add("agent3", "pool = carry∪neighbors∪bonus_ch", "fail",
+            f"pool={len(pool)}, expect={len(expect)}")
+    if pool and all(1 <= x <= 45 for x in pool):
+        add("agent3", "pool 번호 범위", "ok")
+    else:
+        add("agent3", "pool 번호 범위", "fail")
+    mand = a3.get("mandate", [])
+    if (isinstance(mand, (list, tuple)) and len(mand) == 2
+            and 0 <= mand[0] <= mand[1] <= 6):
+        add("agent3", "mandate 유효", "ok", str(mand))
+    else:
+        add("agent3", "mandate 유효", "fail", str(mand))
+
+    # ---- Agent4 (핵심: 변별력 감시) ----
+    games = result.get("games", [])
+    scores = [g.get("filter_score") for g in games]
+    if games and all(isinstance(s, (int, float)) for s in scores):
+        add("agent4", "점수 숫자형·탈락 없음", "ok")
+    else:
+        add("agent4", "점수 숫자형·탈락 없음", "fail", str(scores))
+    uniq = len(set(scores)) if scores else 0
+    if uniq <= 1:
+        add("agent4", "점수 변별력", "fail",
+            f"고유값 {uniq}개 — 전부 동점이라 선별 무력화! (2026-10-04 진단 재발)")
+    elif uniq < 3:
+        add("agent4", "점수 변별력", "warn", f"고유값 {uniq}개 — 낮음")
+    else:
+        add("agent4", "점수 변별력", "ok", f"고유값 {uniq}개")
+    # 게임 형식 검사
+    bad_g = [g["numbers"] for g in games
+             if not (isinstance(g.get("numbers"), list) and len(g["numbers"]) == 6
+                     and len(set(g["numbers"])) == 6
+                     and all(1 <= x <= 45 for x in g["numbers"]))]
+    if not bad_g and len(games) == 10:
+        add("agent4", "게임 10개·형식", "ok")
+    else:
+        add("agent4", "게임 10개·형식", "fail",
+            f"games={len(games)}, bad={len(bad_g)}")
+
+    # ---- Agent5 ----
+    a5 = result.get("agent5", {})
+    states = a5.get("states", {})
+    if set(states.keys()) == {"D1", "D2", "D3", "D4", "D5"}:
+        add("agent5", "states D1~D5 존재", "ok")
+    else:
+        add("agent5", "states D1~D5 존재", "fail", str(list(states.keys())))
+    bad_s = [k for k, v in states.items()
+             if not (isinstance(v.get("frozen_now"), bool)
+                     and 0 <= v.get("reconsec_rate", -1) <= 1)]
+    if not bad_s:
+        add("agent5", "states 값 유효", "ok")
+    else:
+        add("agent5", "states 값 유효", "fail", str(bad_s))
+
+    # ---- Agent6 ----
+    a6 = result.get("agent6", {})
+    p00 = (a6.get("P") or [[None]])[0][0]
+    if p00 is not None and abs(p00 - 2.4063) / 2.4063 < 0.05:
+        add("agent6", "P00 스펙 재현 (±5%)", "ok", f"{p00}")
+    else:
+        add("agent6", "P00 스펙 재현 (±5%)", "fail", f"P00={p00}")
+    fc = a6.get("final_cm_estimate")
+    if fc is not None and 1 <= fc <= 45:
+        add("agent6", "final_cm 범위", "ok", f"{fc}")
+    else:
+        add("agent6", "final_cm 범위", "fail", f"{fc}")
+
+    # ---- 교차: Agent1 밴드 vs 게임 CM ----
+    band = a1.get("target_cm_band", [])
+    if band and games:
+        in_band = sum(1 for g in games
+                      if band[0] <= sum(g["numbers"]) / 6 <= band[1])
+        if in_band >= 5:
+            add("cross", "게임 CM 밴드 적중률", "ok", f"{in_band}/10")
+        elif in_band >= 3:
+            add("cross", "게임 CM 밴드 적중률", "warn",
+                f"{in_band}/10 — quota와 밴드 충돌 가능")
+        else:
+            add("cross", "게임 CM 밴드 적중률", "fail",
+                f"{in_band}/10 — Agent1 목표와 생성 결과 괴리!")
+
+    n_fail = sum(1 for c in checks if c["status"] == "fail")
+    n_warn = sum(1 for c in checks if c["status"] == "warn")
+    log("VALIDATE", f"{len(checks)}개 검사: ok {len(checks)-n_fail-n_warn}, "
+                    f"warn {n_warn}, fail {n_fail}")
+    return checks

@@ -23,7 +23,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from agents import (load_data, agent1_phase_zlema, agent2_quotas, agent3_transition,
                     agent4_score, agent5_hedge, agent6_kalman_audit,
-                    generate_games, LOG)
+                    generate_games, validate_prediction, LOG)
 from hogi import run_hogi_agents, LOG as HOGI_LOG
 
 XLSX = os.path.expanduser("~/workspace/user/files/645_408.xlsx")
@@ -41,6 +41,9 @@ def run(target_draw, write_receipt):
     hg = run_hogi_agents(df, target_draw)
     LOG.extend(HOGI_LOG)
     games = generate_games(df, seed=target_draw)
+    validation = validate_prediction({
+        "agent1": a1, "agent2": a2, "agent3": a3,
+        "agent5": a5, "agent6": a6, "games": games})
     result = {
         "target_draw": target_draw,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -49,6 +52,7 @@ def run(target_draw, write_receipt):
         "agent3": {k: v for k, v in a3.items()},
         "agent5": a5, "agent6": a6, "hogi": hg,
         "games": games,
+        "validation": validation,
         "execution_log": LOG,
     }
     if write_receipt:
@@ -89,6 +93,13 @@ def main():
     print(f"[Agent5] " + (" | ".join(r['agent5']['guidance']) if r['agent5']['guidance'] else "결빙 없음"))
     print(f"[Agent6] CM 추정 {r['agent6']['final_cm_estimate']}, 혁신 평균 {r['agent6']['mean_innovation']}")
     print(f"[Hogi] {'활성' if r['hogi']['available'] else '비활성: ' + r['hogi']['reason']}")
+    # 감시 결과 요약
+    fails = [c for c in r.get("validation", []) if c["status"] == "fail"]
+    warns = [c for c in r.get("validation", []) if c["status"] == "warn"]
+    print(f"\n[감시] {len(r.get('validation', []))}개 검사: "
+          f"fail {len(fails)}, warn {len(warns)}")
+    for c in fails + warns:
+        print(f"  [{c['status']}] {c['agent']}/{c['check']}: {c['detail']}")
 
 
 if __name__ == "__main__":
