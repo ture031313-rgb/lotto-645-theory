@@ -49,9 +49,22 @@ def zlema(series, period=10):
     return de_lagged.ewm(span=period, adjust=False).mean()
 
 
+def _cm_series(df):
+    """실제CM 컬럼을 읽되, 비어있는 신규 회차는 번호 평균으로 대체한다.
+    (2026-10-08: 1244행 추가 시 실제CM 미기입으로 NaN 크래시 발생.
+    기존 행은 저장값을 그대로 쓰므로 기존 예측 결과에 영향 없음.)"""
+    cm = df["실제CM"].values.astype(float)
+    if np.isnan(cm).any():
+        computed = df["numbers"].apply(lambda r: sum(r) / 6.0).values.astype(float)
+        n_fill = int(np.isnan(cm).sum())
+        cm = np.where(np.isnan(cm), computed, cm)
+        log("DATA", f"실제CM NaN {n_fill}건을 번호 평균으로 대체")
+    return cm
+
+
 # ---------------------------------------------------------------- Agent 1
 def agent1_phase_zlema(df):
-    cm = df["실제CM"].values.astype(float)
+    cm = _cm_series(df)
     eq = float(np.mean(cm))
     cur = float(cm[-1])
     z = zlema(pd.Series(cm)).values
@@ -219,7 +232,7 @@ KALMAN_R = 3.935501
 
 
 def agent6_kalman_audit(df):
-    cm = df["실제CM"].values.astype(float)
+    cm = _cm_series(df)
     F = np.array([[1., 1.], [0., 1.]])
     H = np.array([[1., 0.]])
     Q = KALMAN_Q * np.array([[0.25, 0.5], [0.5, 1.0]])
